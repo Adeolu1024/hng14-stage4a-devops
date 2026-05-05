@@ -1,0 +1,17 @@
+services:
+  image: swiftdeploy-keeds-api:v1.0.0
+  port: 5000
+  name: api-service
+  version: 1.0.0
+  mode: stable
+nginx:
+  image: nginx:alpine
+  port: 8080
+  proxy_timeout: 30s
+  error_contact: devops@swiftdeploy.local
+network:
+  name: swiftdeploy-net
+  driver_type: bridge
+volumes:
+  logs: swiftdeploy-logs
+restart_policy: unless-stopped
