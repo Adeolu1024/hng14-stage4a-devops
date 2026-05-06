@@ -1,0 +1,17 @@
+# Generated files
+nginx.conf
+docker-compose.yml
+history.jsonl
+audit_report.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Docker
+.dockerignore
+
+# Test files
+test_*.py

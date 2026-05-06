@@ -360,7 +360,7 @@ def cmd_teardown(args):
 
     # Verify no swiftdeploy containers remain
     ps_result = subprocess.run(
-        ["docker", "ps", "-a", "--filter", "name=api-service", "--filter", "name=nginx-proxy", "--format", "{{.Names}}"],
+        ["docker", "ps", "-a", "--filter", "name=api-service", "--filter", "name=nginx-proxy", "--filter", "name=opa-engine", "--format", "{{.Names}}"],
         capture_output=True, text=True
     )
     remaining = ps_result.stdout.strip()
@@ -662,11 +662,7 @@ def cmd_deploy_4b(args=None):
 def cmd_promote_4b(args):
     # Run pre-promote OPA check when promoting to canary
     if args.mode.lower() == "canary":
-        try:
-            pre_promote_check()
-        except SystemExit:
-            print("[FAIL] Pre-promote check cancelled promotion.")
-            sys.exit(1)
+        pre_promote_check()
 
     # Run original promote logic
     cmd_promote(args)
@@ -705,13 +701,15 @@ def cmd_status(args):
 
             # Query OPA for current policy compliance
             host_stats = get_host_stats()
+            host_stats["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             infra_decision = query_opa("infrastructure", {**host_stats, "check_type": "status"})
 
             canary_input = {
                 "error_rate": round(error_rate, 6),
                 "p99_latency_ms": round(p99_ms, 2),
                 "window_seconds": 30,
-                "check_type": "status"
+                "check_type": "status",
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             }
             canary_decision = query_opa("canary", canary_input)
 
@@ -802,16 +800,27 @@ def cmd_audit(args):
     timeline_events = []
     chaos_events = []
     violations = []
+    prev_mode = None
 
     for r in records:
         ts = r.get("timestamp", "unknown")
         ct = r.get("check_type", "unknown")
 
-        # Track mode changes
+        # Track mode changes and status updates
         if ct in ("status",):
             mode = r.get("mode", "unknown")
-            chaos = r.get("chaos", "unknown")
-            timeline_events.append((ts, "status_update", mode, chaos))
+            chaos = r.get("chaos", "none")
+            timeline_events.append((ts, ct, mode, chaos))
+            
+            # Track explicit mode changes
+            if prev_mode and mode != prev_mode and mode != "unknown":
+                timeline_events.append((ts, "mode_change", f"{prev_mode} → {mode}", ""))
+            if mode != "unknown":
+                prev_mode = mode
+
+        # Track deploy/promote events
+        if ct in ("pre-deploy", "pre-promote"):
+            timeline_events.append((ts, ct, "", ""))
 
         # Track chaos via /metrics
         if ct in ("status",):

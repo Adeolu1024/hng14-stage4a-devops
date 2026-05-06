@@ -17,8 +17,15 @@ SwiftDeploy is a declarative infrastructure CLI that generates Docker Compose an
 ├── templates/
 │   ├── nginx.conf.j2          # Nginx config template
 │   └── docker-compose.yml.j2  # Compose file template
+├── policies/
+│   └── swiftdeploy/
+│       ├── infrastructure.rego # Infrastructure policy (disk/CPU checks)
+│       ├── canary.rego         # Canary safety policy (error rate/P99)
+│       └── thresholds.json     # Data-driven threshold values
 ├── nginx.conf                 # Generated (root folder)
 ├── docker-compose.yml         # Generated (root folder)
+├── history.jsonl              # Generated audit trail
+├── audit_report.md            # Generated audit report
 └── README.md                  # This file
 ```
 
@@ -158,6 +165,59 @@ restart_policy: unless-stopped
   - `{ "mode": "slow", "duration": N }`
   - `{ "mode": "error", "rate": 0.5 }`
   - `{ "mode": "recover" }`
+
+## Stage 4B: Observability, Policy Enforcement & Auditing
+
+### /metrics Endpoint
+
+The API exposes a Prometheus-format `/metrics` endpoint at `http://localhost:8080/metrics`:
+
+```
+http_requests_total{method="GET",path="/healthz",status_code="200"} 42
+http_request_duration_seconds_bucket{le="0.1"} 35
+app_uptime_seconds 847
+app_mode 0
+chaos_active 0
+```
+
+### OPA Policy Engine
+
+SwiftDeploy uses Open Policy Agent (OPA) as a sidecar container for policy enforcement. The CLI queries OPA before deploy and promote operations.
+
+**Policies:**
+- **Infrastructure Policy**: Blocks deploy if Disk Free < 10GB or CPU Load > 2.0
+- **Canary Safety Policy**: Blocks promote if Error Rate > 1% or P99 Latency > 500ms
+
+**Key design:** The CLI never makes decisions itself — it always asks OPA. If OPA is unreachable, the CLI warns but continues.
+
+### swiftdeploy status
+
+Live terminal dashboard showing:
+- Real-time req/s and P99 latency
+- Policy compliance (PASS/FAIL for each policy)
+- Mode, chaos state, uptime
+- Appends every scrape to `history.jsonl`
+
+```bash
+./swiftdeploy status
+```
+
+### swiftdeploy audit
+
+Generates `audit_report.md` from `history.jsonl` with:
+- Timeline table of mode changes and status updates
+- Chaos injection events
+- Policy violations section
+
+```bash
+./swiftdeploy audit
+cat audit_report.md
+```
+
+### Gated Lifecycle
+
+- **pre-deploy**: CLI gets host stats (disk, CPU, memory) and queries OPA's infrastructure policy
+- **pre-promote**: CLI scrapes `/metrics`, calculates error rate and P99 latency, and queries OPA's canary safety policy
 
 ## License
 

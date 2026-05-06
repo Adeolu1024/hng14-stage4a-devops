@@ -1,14 +1,32 @@
 # Audit Report — SwiftDeploy Stage 4B
 
-**Generated:** 2026-05-06 15:30:25 UTC
-**Records Analyzed:** 9
+**Generated:** 2026-05-06 19:21:19 UTC
+**Records Analyzed:** 29
 
 ## Timeline
 
 | Timestamp | Event | Mode | Chaos | Details |
 |-----------|-------|------|-------|---------|
-| 2026-05-06T15:30:02Z | status_update | canary | none | |
-| 2026-05-06T15:30:07Z | status_update | canary | none | |
+| 2026-05-06T17:37:05Z | pre-promote |  |  | |
+| 2026-05-06T17:38:35Z | status | canary | none | |
+| 2026-05-06T17:38:37Z | status | canary | none | |
+| 2026-05-06T17:38:39Z | status | canary | none | |
+| 2026-05-06T17:46:30Z | pre-deploy |  |  | |
+| 2026-05-06T17:54:30Z | pre-promote |  |  | |
+| 2026-05-06T17:56:50Z | status | canary | none | |
+| 2026-05-06T17:56:52Z | status | canary | none | |
+| 2026-05-06T17:56:54Z | status | canary | none | |
+| 2026-05-06T18:02:08Z | status | canary | none | |
+| 2026-05-06T18:02:11Z | status | canary | none | |
+| 2026-05-06T18:02:13Z | status | canary | none | |
+| 2026-05-06T18:08:13Z | status | canary | none | |
+| 2026-05-06T18:08:15Z | status | canary | none | |
+| 2026-05-06T18:08:17Z | status | canary | none | |
+| 2026-05-06T18:22:55Z | pre-deploy |  |  | |
+| 2026-05-06T19:16:47Z | pre-deploy |  |  | |
+| 2026-05-06T19:17:54Z | pre-promote |  |  | |
+| 2026-05-06T19:19:36Z | status | canary | none | |
+| 2026-05-06T19:19:39Z | status | canary | none | |
 
 ## Policy Violations
 
@@ -20,6 +38,8 @@
 | 2026-05-06T15:19:46Z | pre-deploy | infrastructure | OPA is unreachable — is the stack running? |
 | 2026-05-06T15:23:35Z | pre-deploy | infrastructure | OPA is unreachable — is the stack running? |
 | 2026-05-06T15:26:54Z | pre-deploy | infrastructure | OPA is unreachable — is the stack running? |
+| 2026-05-06T18:22:55Z | pre-deploy | infrastructure | OPA is unreachable — is the stack running? |
+| 2026-05-06T19:16:47Z | pre-deploy | infrastructure | OPA is unreachable — is the stack running? |
 
 ---
 
