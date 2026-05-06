@@ -4,13 +4,13 @@ import future.keywords.if
 import future.keywords.in
 
 deny contains msg if {
-    input.disk_free_gb < data.swiftdeploy.infrastructure.min_disk_gb
-    msg := sprintf("Insufficient disk space: %dGB free, minimum %dGB required", [input.disk_free_gb, data.swiftdeploy.infrastructure.min_disk_gb])
+    input.disk_free_gb < data.swiftdeploy.thresholds.infrastructure.min_disk_gb
+    msg := sprintf("Insufficient disk space: %.2fGB free, minimum %.2fGB required", [input.disk_free_gb, data.swiftdeploy.thresholds.infrastructure.min_disk_gb])
 }
 
 deny contains msg if {
-    input.cpu_load > data.swiftdeploy.infrastructure.max_cpu_load
-    msg := sprintf("High CPU load: %.2f, maximum %.2f allowed", [input.cpu_load, data.swiftdeploy.infrastructure.max_cpu_load])
+    input.cpu_load > data.swiftdeploy.thresholds.infrastructure.max_cpu_load
+    msg := sprintf("High CPU load: %.2f, maximum %.2f allowed", [input.cpu_load, data.swiftdeploy.thresholds.infrastructure.max_cpu_load])
 }
 
 allow := count(deny) == 0

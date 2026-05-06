@@ -5,9 +5,11 @@ CLI tool for managing SwiftDeploy infrastructure lifecycle.
 """
 
 import argparse
+import ctypes
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -388,32 +390,43 @@ def get_host_stats():
     """Collect host disk, CPU, and memory stats."""
     stats = {"disk_free_gb": 0, "cpu_load": 0.0, "mem_available_gb": 0}
 
-    # Disk free space
     try:
-        df = subprocess.run(["df", "-BG", "/"], capture_output=True, text=True)
-        for line in df.stdout.split("\n")[1:]:
-            parts = line.split()
-            if len(parts) >= 4 and parts[0].startswith("/"):
-                free_gb = parts[3].replace("G", "")
-                stats["disk_free_gb"] = float(free_gb)
+        usage = shutil.disk_usage(os.getcwd())
+        stats["disk_free_gb"] = round(usage.free / (1024 ** 3), 2)
     except Exception:
         pass
 
-    # CPU load (1min average)
     try:
-        with open("/proc/loadavg") as f:
-            stats["cpu_load"] = float(f.read().split()[0])
+        if hasattr(os, "getloadavg"):
+            stats["cpu_load"] = round(float(os.getloadavg()[0]), 2)
     except Exception:
         pass
 
-    # Memory available
     try:
-        mem = subprocess.run(["free", "-g"], capture_output=True, text=True)
-        for line in mem.stdout.split("\n"):
-            if "Mem:" in line:
-                parts = line.split()
-                if len(parts) >= 7:
-                    stats["mem_available_gb"] = float(parts[6])
+        if os.name == "nt":
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            memory = MEMORYSTATUSEX()
+            memory.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory)):
+                stats["mem_available_gb"] = round(memory.ullAvailPhys / (1024 ** 3), 2)
+        else:
+            with open("/proc/meminfo", "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        stats["mem_available_gb"] = round(float(line.split()[1]) / (1024 ** 2), 2)
+                        break
     except Exception:
         pass
 
@@ -527,11 +540,9 @@ def calculate_p99_from_metrics(metrics):
             total = buckets.get(sorted_le[-1], 0)
             if total == 0:
                 continue
-            target = int(total * 0.99)
-            running = 0
+            target = max(1, int(total * 0.99))
             for le in sorted_le:
-                running += buckets.get(le, 0)
-                if running >= target:
+                if buckets.get(le, 0) >= target:
                     p99_ms = max(p99_ms, le * 1000)
                     break
     else:

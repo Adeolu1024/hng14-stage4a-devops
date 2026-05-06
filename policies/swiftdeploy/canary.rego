@@ -4,13 +4,13 @@ import future.keywords.if
 import future.keywords.in
 
 deny contains msg if {
-    input.error_rate > data.swiftdeploy.canary.max_error_rate
-    msg := sprintf("High error rate: %.4f, maximum %.4f allowed", [input.error_rate, data.swiftdeploy.canary.max_error_rate])
+    input.error_rate > data.swiftdeploy.thresholds.canary.max_error_rate
+    msg := sprintf("High error rate: %.4f, maximum %.4f allowed", [input.error_rate, data.swiftdeploy.thresholds.canary.max_error_rate])
 }
 
 deny contains msg if {
-    input.p99_latency_ms > data.swiftdeploy.canary.max_p99_latency_ms
-    msg := sprintf("High P99 latency: %dms, maximum %dms allowed", [input.p99_latency_ms, data.swiftdeploy.canary.max_p99_latency_ms])
+    input.p99_latency_ms > data.swiftdeploy.thresholds.canary.max_p99_latency_ms
+    msg := sprintf("High P99 latency: %.2fms, maximum %.2fms allowed", [input.p99_latency_ms, data.swiftdeploy.thresholds.canary.max_p99_latency_ms])
 }
 
 allow := count(deny) == 0
