@@ -25,6 +25,8 @@ chaos_lock = threading.Lock()
 metrics_lock = threading.Lock()
 http_requests_total = {}  # {(method, path, status): count}
 http_request_duration_seconds = {}  # {le: count} for histogram buckets
+http_request_duration_sum = {}  # {(method, path): total duration}
+http_request_duration_count = {}  # {(method, path): count}
 HISTOGRAM_BUCKETS = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
 
 
@@ -36,11 +38,18 @@ def record_request(method, path, status_code, duration):
     with metrics_lock:
         key = (method, path, status_code)
         http_requests_total[key] = http_requests_total.get(key, 0) + 1
-        
+
+        path_key = (method, path)
+        http_request_duration_sum[path_key] = http_request_duration_sum.get(path_key, 0.0) + duration
+        http_request_duration_count[path_key] = http_request_duration_count.get(path_key, 0) + 1
+
         for bucket in HISTOGRAM_BUCKETS:
             bkey = (method, path, bucket)
             if duration <= bucket:
                 http_request_duration_seconds[bkey] = http_request_duration_seconds.get(bkey, 0) + 1
+
+        inf_key = (method, path, "+Inf")
+        http_request_duration_seconds[inf_key] = http_request_duration_seconds.get(inf_key, 0) + 1
 
 
 @app.after_request
@@ -98,6 +107,10 @@ def metrics():
     with metrics_lock:
         for (method, path, bucket), count in http_request_duration_seconds.items():
             lines.append(f'http_request_duration_seconds_bucket{{method="{method}",path="{path}",le="{bucket}"}} {count}')
+        for (method, path), count in http_request_duration_count.items():
+            total = http_request_duration_sum.get((method, path), 0.0)
+            lines.append(f'http_request_duration_seconds_count{{method="{method}",path="{path}"}} {count}')
+            lines.append(f'http_request_duration_seconds_sum{{method="{method}",path="{path}"}} {total:.6f}')
     
     # app_uptime_seconds
     lines.append("# HELP app_uptime_seconds Application uptime in seconds")
