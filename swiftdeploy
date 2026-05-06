@@ -5,6 +5,7 @@ CLI tool for managing SwiftDeploy infrastructure lifecycle.
 """
 
 import argparse
+import json
 import os
 import re
 import socket
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import urllib.error
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -376,6 +378,497 @@ def cmd_teardown(args):
 
 
 # ---------------------------------------------------------------------------
+# OPA helpers
+# ---------------------------------------------------------------------------
+OPA_URL = "http://localhost:8181"
+HISTORY_FILE = "history.jsonl"
+
+
+def get_host_stats():
+    """Collect host disk, CPU, and memory stats."""
+    stats = {"disk_free_gb": 0, "cpu_load": 0.0, "mem_available_gb": 0}
+
+    # Disk free space
+    try:
+        df = subprocess.run(["df", "-BG", "/"], capture_output=True, text=True)
+        for line in df.stdout.split("\n")[1:]:
+            parts = line.split()
+            if len(parts) >= 4 and parts[0].startswith("/"):
+                free_gb = parts[3].replace("G", "")
+                stats["disk_free_gb"] = float(free_gb)
+    except Exception:
+        pass
+
+    # CPU load (1min average)
+    try:
+        with open("/proc/loadavg") as f:
+            stats["cpu_load"] = float(f.read().split()[0])
+    except Exception:
+        pass
+
+    # Memory available
+    try:
+        mem = subprocess.run(["free", "-g"], capture_output=True, text=True)
+        for line in mem.stdout.split("\n"):
+            if "Mem:" in line:
+                parts = line.split()
+                if len(parts) >= 7:
+                    stats["mem_available_gb"] = float(parts[6])
+    except Exception:
+        pass
+
+    return stats
+
+
+def query_opa(domain, input_data):
+    """Query OPA for a policy decision. Returns dict with allowed, reasons, etc."""
+    try:
+        url = f"{OPA_URL}/v1/data/swiftdeploy/{domain}/decision"
+        req = urllib.request.Request(
+            url,
+            data=json.dumps({"input": input_data}).encode(),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            result = json.loads(resp.read().decode())
+            return result.get("result", {"allowed": False, "reasons": ["OPA returned no decision"]})
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        return {"allowed": False, "reasons": [f"OPA HTTP {e.code}: {body}"], "error": "opa_http_error"}
+    except urllib.error.URLError:
+        return {"allowed": False, "reasons": ["OPA is unreachable — is the stack running?"], "error": "opa_unreachable"}
+    except Exception as e:
+        return {"allowed": False, "reasons": [f"Unexpected OPA error: {e}"], "error": "opa_unknown"}
+
+
+def scrape_metrics(port=8080):
+    """Scrape /metrics endpoint and return parsed data."""
+    result = {
+        "http_requests_total": {},
+        "http_request_duration_seconds_bucket": {},
+        "app_uptime_seconds": 0,
+        "app_mode": 0,
+        "chaos_active": 0
+    }
+    try:
+        with urllib.request.urlopen(f"http://localhost:{port}/metrics", timeout=5) as resp:
+            for line in resp.read().decode().split("\n"):
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "{" in line:
+                    name = line.split("{")[0]
+                    labels_str = line.split("{")[1].split("}")[0]
+                    value = line.split("}")[1].strip()
+                    # Parse labels into dict
+                    labels = {}
+                    for part in labels_str.split(","):
+                        if "=" in part:
+                            k, v = part.split("=", 1)
+                            labels[k.strip()] = v.strip('"')
+                    if name == "http_requests_total":
+                        key = f"{labels.get('method','')} {labels.get('path','')} {labels.get('status_code','')}"
+                        result["http_requests_total"][key] = int(float(value))
+                    elif name == "http_request_duration_seconds_bucket":
+                        key = f"{labels.get('method','')} {labels.get('path','')} {labels.get('le','')}"
+                        result["http_request_duration_seconds_bucket"][key] = int(float(value))
+                else:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        name = parts[0]
+                        try:
+                            val = float(parts[1])
+                            if name == "app_uptime_seconds":
+                                result["app_uptime_seconds"] = val
+                            elif name == "app_mode":
+                                result["app_mode"] = int(val)
+                            elif name == "chaos_active":
+                                result["chaos_active"] = int(val)
+                        except ValueError:
+                            pass
+    except Exception:
+        pass
+    return result
+
+
+def calculate_p99_from_metrics(metrics):
+    """Calculate P99 latency and error rate from scraped metrics."""
+    error_count = 0
+    total_count = 0
+
+    for key, count in metrics.get("http_requests_total", {}).items():
+        total_count += count
+        parts = key.split()
+        if len(parts) >= 3:
+            status = parts[-1]
+            if status.startswith("5"):
+                error_count += count
+
+    error_rate = error_count / max(total_count, 1)
+
+    # P99 from histogram buckets
+    hist = metrics.get("http_request_duration_seconds_bucket", {})
+    if hist:
+        # Group by method+path
+        buckets_by_key = {}
+        for key, count in hist.items():
+            parts = key.split()
+            if len(parts) >= 2:
+                method_path = f"{parts[0]} {parts[1]}"
+                le = float(parts[-1])
+                if method_path not in buckets_by_key:
+                    buckets_by_key[method_path] = {}
+                buckets_by_key[method_path][le] = count
+
+        # Calculate P99 for each method+path, take the max
+        p99_ms = 0
+        for method_path, buckets in buckets_by_key.items():
+            sorted_le = sorted(buckets.keys())
+            total = buckets.get(sorted_le[-1], 0)
+            if total == 0:
+                continue
+            target = int(total * 0.99)
+            running = 0
+            for le in sorted_le:
+                running += buckets.get(le, 0)
+                if running >= target:
+                    p99_ms = max(p99_ms, le * 1000)
+                    break
+    else:
+        p99_ms = 0
+
+    return error_rate, p99_ms
+
+
+def pre_deploy_check():
+    """Run pre-deploy OPA check with host stats."""
+    print("[INFO] Running pre-deploy OPA policy check...")
+    stats = get_host_stats()
+    stats["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    stats["check_type"] = "pre-deploy"
+
+    print(f"       Host: Disk={stats['disk_free_gb']}GB free, CPU={stats['cpu_load']} load, Mem={stats['mem_available_gb']}GB free")
+    decision = query_opa("infrastructure", stats)
+
+    # Append to history
+    record = {
+        "timestamp": stats["timestamp"],
+        "check_type": "pre-deploy",
+        "domain": "infrastructure",
+        "allowed": decision.get("allowed", True),
+        "reasons": decision.get("reasons", []),
+        "stats": stats
+    }
+    append_history(record)
+
+    if "error" in decision:
+        err_type = decision["error"]
+        if err_type == "opa_unreachable":
+            print(f"[WARN] OPA is not reachable ({decision['reasons'][0]}). Skipping policy check.")
+            print(f"[WARN] Deploy will continue without policy enforcement.")
+            return True
+        else:
+            print(f"[WARN] OPA error: {decision['reasons'][0]}")
+            print(f"[WARN] Deploy will continue without policy enforcement.")
+            return True
+
+    if not decision.get("allowed", False):
+        print("[FAIL] POLICY VIOLATION — Infrastructure check failed:")
+        for reason in decision.get("reasons", []):
+            print(f"       ✗ {reason}")
+        print("[FAIL] Deploy blocked by policy.")
+        sys.exit(1)
+    else:
+        print("[PASS] Infrastructure policy check passed.")
+    return True
+
+
+def pre_promote_check():
+    """Run pre-promote OPA check with canary metrics."""
+    print("[INFO] Running pre-promote OPA policy check...")
+    manifest = load_manifest()
+    port = manifest.get("nginx", {}).get("port", 8080)
+
+    metrics = scrape_metrics(port)
+    error_rate, p99_ms = calculate_p99_from_metrics(metrics)
+
+    input_data = {
+        "error_rate": round(error_rate, 6),
+        "p99_latency_ms": round(p99_ms, 2),
+        "window_seconds": 30,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "check_type": "pre-promote"
+    }
+
+    print(f"       Canary: Error Rate={error_rate*100:.2f}%, P99={p99_ms:.0f}ms")
+    decision = query_opa("canary", input_data)
+
+    # Append to history
+    record = {
+        "timestamp": input_data["timestamp"],
+        "check_type": "pre-promote",
+        "domain": "canary_safety",
+        "allowed": decision.get("allowed", True),
+        "reasons": decision.get("reasons", []),
+        "metrics": input_data
+    }
+    append_history(record)
+
+    if "error" in decision:
+        err_type = decision["error"]
+        if err_type == "opa_unreachable":
+            print(f"[WARN] OPA is not reachable ({decision['reasons'][0]}). Skipping policy check.")
+            print(f"[WARN] Promote will continue without canary safety check.")
+            return True
+        else:
+            print(f"[WARN] OPA error: {decision['reasons'][0]}")
+            print(f"[WARN] Promote will continue without canary safety check.")
+            return True
+
+    if not decision.get("allowed", False):
+        print("[FAIL] POLICY VIOLATION — Canary safety check failed:")
+        for reason in decision.get("reasons", []):
+            print(f"       ✗ {reason}")
+        print("[FAIL] Promote blocked by policy.")
+        sys.exit(1)
+    else:
+        print("[PASS] Canary safety policy check passed.")
+    return True
+
+
+def append_history(record):
+    """Append a record to history.jsonl."""
+    try:
+        with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: deploy (updated with OPA pre-check)
+# ---------------------------------------------------------------------------
+def cmd_deploy_4b(args=None):
+    # Run pre-deploy OPA check
+    pre_deploy_check()
+
+    # Run original deploy logic
+    cmd_deploy(args)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: promote (updated with OPA pre-check)
+# ---------------------------------------------------------------------------
+def cmd_promote_4b(args):
+    # Run pre-promote OPA check when promoting to canary
+    if args.mode.lower() == "canary":
+        try:
+            pre_promote_check()
+        except SystemExit:
+            print("[FAIL] Pre-promote check cancelled promotion.")
+            sys.exit(1)
+
+    # Run original promote logic
+    cmd_promote(args)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: status (live dashboard)
+# ---------------------------------------------------------------------------
+def cmd_status(args):
+    print("[INFO] SwiftDeploy Status Dashboard (press Ctrl+C to stop)\n")
+
+    prev_metrics = None
+    prev_time = time.time()
+
+    try:
+        while True:
+            port = load_manifest().get("nginx", {}).get("port", 8080)
+            metrics = scrape_metrics(port)
+
+            now = time.time()
+            delta = now - prev_time
+
+            # Calculate req/s
+            reqs_now = sum(metrics.get("http_requests_total", {}).values())
+            if prev_metrics:
+                reqs_prev = sum(prev_metrics.get("http_requests_total", {}).values())
+                reqs_per_sec = (reqs_now - reqs_prev) / max(delta, 1)
+            else:
+                reqs_per_sec = 0
+
+            error_rate, p99_ms = calculate_p99_from_metrics(metrics)
+
+            mode_label = "canary" if metrics["app_mode"] == 1 else "stable"
+            chaos_labels = {0: "none", 1: "slow", 2: "error"}
+            chaos_label = chaos_labels.get(metrics["chaos_active"], "none")
+
+            # Query OPA for current policy compliance
+            host_stats = get_host_stats()
+            infra_decision = query_opa("infrastructure", {**host_stats, "check_type": "status"})
+
+            canary_input = {
+                "error_rate": round(error_rate, 6),
+                "p99_latency_ms": round(p99_ms, 2),
+                "window_seconds": 30,
+                "check_type": "status"
+            }
+            canary_decision = query_opa("canary", canary_input)
+
+            # Save to history
+            record = {
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "check_type": "status",
+                "reqs_per_sec": round(reqs_per_sec, 2),
+                "p99_latency_ms": round(p99_ms, 2),
+                "error_rate": round(error_rate, 6),
+                "mode": mode_label,
+                "chaos": chaos_label,
+                "infra_policy": infra_decision.get("allowed", False),
+                "canary_policy": canary_decision.get("allowed", False)
+            }
+            append_history(record)
+
+            # Clear terminal and display
+            # Use simple approach — carriage return
+            display = (
+                f"  ╔═══════════════════════════════════════╗\n"
+                f"  ║     SwiftDeploy Status Dashboard      ║\n"
+                f"  ╠═══════════════════════════════════════╣\n"
+                f"  ║ Mode: {mode_label:<28s} ║\n"
+                f"  ║ Chaos: {chaos_label:<27s} ║\n"
+                f"  ║ Req/s: {reqs_per_sec:<8.2f}               ║\n"
+                f"  ║ P99 Latency: {p99_ms:<8.0f}ms             ║\n"
+                f"  ║ Error Rate: {error_rate*100:<5.2f}%               ║\n"
+                f"  ║ Uptime: {metrics['app_uptime_seconds']:<8.0f}s              ║\n"
+                f"  ╠═══════════════════════════════════════╣\n"
+                f"  ║ Policy Compliance                    ║\n"
+                f"  ║   Infrastructure: {'PASS' if infra_decision.get('allowed', False) else 'FAIL':<5s}           ║\n"
+                f"  ║   Canary Safety:  {'PASS' if canary_decision.get('allowed', False) else 'FAIL':<5s}           ║\n"
+                f"  ╚═══════════════════════════════════════╝\n"
+            )
+
+            sys.stdout.write("\033[2J\033[H")  # Clear screen
+            sys.stdout.write(display)
+            sys.stdout.flush()
+
+            prev_metrics = metrics
+            prev_time = now
+            time.sleep(2)
+
+    except KeyboardInterrupt:
+        print("\n[INFO] Status dashboard stopped.")
+        sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: audit (generate report)
+# ---------------------------------------------------------------------------
+def cmd_audit(args):
+    print("[INFO] Generating audit report...")
+
+    if not os.path.exists(HISTORY_FILE):
+        print("[FAIL] No history data found. Run 'swiftdeploy status' first.")
+        sys.exit(1)
+
+    # Read all history records
+    records = []
+    with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+
+    if not records:
+        print("[FAIL] No valid history records found.")
+        sys.exit(1)
+
+    lines = []
+    lines.append("# Audit Report — SwiftDeploy Stage 4B")
+    lines.append("")
+    lines.append(f"**Generated:** {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}")
+    lines.append(f"**Records Analyzed:** {len(records)}")
+    lines.append("")
+
+    # Timeline
+    lines.append("## Timeline")
+    lines.append("")
+    lines.append("| Timestamp | Event | Mode | Chaos | Details |")
+    lines.append("|-----------|-------|------|-------|---------|")
+
+    timeline_events = []
+    chaos_events = []
+    violations = []
+
+    for r in records:
+        ts = r.get("timestamp", "unknown")
+        ct = r.get("check_type", "unknown")
+
+        # Track mode changes
+        if ct in ("status",):
+            mode = r.get("mode", "unknown")
+            chaos = r.get("chaos", "unknown")
+            timeline_events.append((ts, "status_update", mode, chaos))
+
+        # Track chaos via /metrics
+        if ct in ("status",):
+            chaos_val = r.get("chaos", "none")
+            if chaos_val != "none":
+                chaos_events.append((ts, f"chaos_{chaos_val}", r.get("mode", "unknown")))
+
+        # Track violations
+        allowed = r.get("allowed", True)
+        if not allowed:
+            violations.append(r)
+
+    # Timeline table
+    for evt in timeline_events[-20:]:  # Last 20
+        lines.append(f"| {evt[0]} | {evt[1]} | {evt[2]} | {evt[3]} | |")
+
+    if chaos_events:
+        lines.append("")
+        lines.append("### Chaos Injection Events")
+        lines.append("")
+        lines.append("| Timestamp | Mode | Description |")
+        lines.append("|-----------|------|-------------|")
+        for ce in chaos_events[-10:]:
+            desc = "Slow mode activated" if "slow" in ce[1] else "Error mode activated"
+            lines.append(f"| {ce[0]} | {ce[2]} | {desc} |")
+
+    lines.append("")
+    lines.append("## Policy Violations")
+    lines.append("")
+
+    if violations:
+        lines.append("| Timestamp | Check Type | Domain | Reasons |")
+        lines.append("|-----------|------------|--------|---------|")
+        for v in violations:
+            ts = v.get("timestamp", "unknown")
+            ct = v.get("check_type", "unknown")
+            dom = v.get("domain", "unknown")
+            reasons = "; ".join(v.get("reasons", []))
+            lines.append(f"| {ts} | {ct} | {dom} | {reasons} |")
+    else:
+        lines.append("No policy violations recorded.")
+
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append("_Report generated by swiftdeploy audit_")
+
+    # Write report
+    report = "\n".join(lines)
+    with open("audit_report.md", "w", encoding="utf-8") as f:
+        f.write(report)
+
+    print(f"[OK]   audit_report.md generated ({len(records)} records analyzed).")
+    print(f"[OK]   Report contains {len(violations)} policy violation(s).")
+
+
+# ---------------------------------------------------------------------------
 # Main entrypoint
 # ---------------------------------------------------------------------------
 def main():
@@ -387,10 +880,13 @@ def main():
 
     subparsers.add_parser("init", help="Parse manifest and generate config files")
     subparsers.add_parser("validate", help="Run pre-flight checks")
-    subparsers.add_parser("deploy", help="Init, bring up stack, and wait for health checks")
+    subparsers.add_parser("deploy", help="Init with OPA pre-check, bring up stack")
 
-    promote_parser = subparsers.add_parser("promote", help="Switch deployment mode (canary/stable)")
+    promote_parser = subparsers.add_parser("promote", help="Switch deployment mode (canary/stable) with OPA safety check")
     promote_parser.add_argument("mode", choices=["canary", "stable"], help="Target mode")
+
+    subparsers.add_parser("status", help="Live terminal dashboard with metrics and policy compliance")
+    subparsers.add_parser("audit", help="Generate audit_report.md from history.jsonl")
 
     teardown_parser = subparsers.add_parser("teardown", help="Remove all containers, networks, and volumes")
     teardown_parser.add_argument("--clean", action="store_true", help="Also delete generated configs")
@@ -402,9 +898,13 @@ def main():
     elif args.command == "validate":
         cmd_validate(args)
     elif args.command == "deploy":
-        cmd_deploy(args)
+        cmd_deploy_4b(args)
     elif args.command == "promote":
-        cmd_promote(args)
+        cmd_promote_4b(args)
+    elif args.command == "status":
+        cmd_status(args)
+    elif args.command == "audit":
+        cmd_audit(args)
     elif args.command == "teardown":
         cmd_teardown(args)
 

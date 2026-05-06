@@ -3,7 +3,7 @@ services:
   port: 5000
   name: api-service
   version: 1.0.0
-  mode: stable
+  mode: canary
 nginx:
   image: nginx:alpine
   port: 8080

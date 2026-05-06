@@ -38,6 +38,20 @@ services:
       {{ service_name }}:
         condition: service_healthy
 
+  opa:
+    image: openpolicyagent/opa:latest
+    container_name: opa-engine
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./policies:/policies:ro
+    networks:
+      - {{ network_name }}
+    restart: {{ restart_policy }}
+    cap_drop:
+      - ALL
+    command: ["run", "--server", "--addr", ":8181", "/policies"]
+
 networks:
   {{ network_name }}:
     driver: {{ network_driver }}
