@@ -42,7 +42,7 @@ services:
     image: openpolicyagent/opa:latest
     container_name: opa-engine
     ports:
-      - "127.0.0.1:8181:8181"
+      - "8181:8181"
     volumes:
       - ./policies:/policies:ro
     networks:

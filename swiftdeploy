@@ -453,6 +453,36 @@ def query_opa(domain, input_data):
     except Exception as e:
         return {"allowed": False, "reasons": [f"Unexpected OPA error: {e}"], "error": "opa_unknown"}
 
+def start_opa_for_policy_checks():
+    """Start only the OPA sidecar so deploy can be gated before the app stack starts."""
+    print("[INFO] Starting OPA policy sidecar for pre-deploy checks...")
+    result = subprocess.run(["docker", "compose", "up", "-d", "opa"], capture_output=True, text=True)
+    if result.returncode != 0:
+        result = subprocess.run(["docker-compose", "up", "-d", "opa"], capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"[FAIL] Could not start OPA sidecar:\n{result.stderr}")
+        sys.exit(1)
+
+    for _ in range(30):
+        try:
+            with urllib.request.urlopen(f"{OPA_URL}/health", timeout=2) as resp:
+                if resp.status == 200:
+                    print("[OK]   OPA sidecar is ready.")
+                    return
+        except Exception:
+            time.sleep(1)
+
+    print("[FAIL] OPA sidecar did not become ready within 30 seconds.")
+    sys.exit(1)
+
+
+def fail_policy_engine(decision, action):
+    reason = "; ".join(decision.get("reasons", ["Unknown OPA failure"]))
+    error = decision.get("error", "opa_error")
+    print(f"[FAIL] Policy engine failure ({error}): {reason}")
+    print(f"[FAIL] {action} blocked because SwiftDeploy cannot verify policy compliance.")
+    sys.exit(1)
+
 
 def scrape_metrics(port=8080):
     """Scrape /metrics endpoint and return parsed data."""
@@ -573,15 +603,7 @@ def pre_deploy_check():
     append_history(record)
 
     if "error" in decision:
-        err_type = decision["error"]
-        if err_type == "opa_unreachable":
-            print(f"[WARN] OPA is not reachable ({decision['reasons'][0]}). Skipping policy check.")
-            print(f"[WARN] Deploy will continue without policy enforcement.")
-            return True
-        else:
-            print(f"[WARN] OPA error: {decision['reasons'][0]}")
-            print(f"[WARN] Deploy will continue without policy enforcement.")
-            return True
+        fail_policy_engine(decision, "Deploy")
 
     if not decision.get("allowed", False):
         print("[FAIL] POLICY VIOLATION — Infrastructure check failed:")
@@ -626,15 +648,7 @@ def pre_promote_check():
     append_history(record)
 
     if "error" in decision:
-        err_type = decision["error"]
-        if err_type == "opa_unreachable":
-            print(f"[WARN] OPA is not reachable ({decision['reasons'][0]}). Skipping policy check.")
-            print(f"[WARN] Promote will continue without canary safety check.")
-            return True
-        else:
-            print(f"[WARN] OPA error: {decision['reasons'][0]}")
-            print(f"[WARN] Promote will continue without canary safety check.")
-            return True
+        fail_policy_engine(decision, "Promote")
 
     if not decision.get("allowed", False):
         print("[FAIL] POLICY VIOLATION — Canary safety check failed:")
@@ -660,7 +674,9 @@ def append_history(record):
 # Subcommand: deploy (updated with OPA pre-check)
 # ---------------------------------------------------------------------------
 def cmd_deploy_4b(args=None):
-    # Run pre-deploy OPA check
+    # Generate config and start OPA first so the full deployment is policy-gated.
+    cmd_init()
+    start_opa_for_policy_checks()
     pre_deploy_check()
 
     # Run original deploy logic
@@ -671,9 +687,8 @@ def cmd_deploy_4b(args=None):
 # Subcommand: promote (updated with OPA pre-check)
 # ---------------------------------------------------------------------------
 def cmd_promote_4b(args):
-    # Run pre-promote OPA check when promoting to canary
-    if args.mode.lower() == "canary":
-        pre_promote_check()
+    # Run pre-promote OPA check before any mode change.
+    pre_promote_check()
 
     # Run original promote logic
     cmd_promote(args)
