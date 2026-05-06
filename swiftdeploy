@@ -58,7 +58,7 @@ def render_template(template_path: str, context: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# YAML helpers (soft dependency — fail gracefully with guidance)
+# YAML helpers (soft dependency - fail gracefully with guidance)
 # ---------------------------------------------------------------------------
 def import_yaml():
     try:
@@ -449,7 +449,7 @@ def query_opa(domain, input_data):
         body = e.read().decode()
         return {"allowed": False, "reasons": [f"OPA HTTP {e.code}: {body}"], "error": "opa_http_error"}
     except urllib.error.URLError:
-        return {"allowed": False, "reasons": ["OPA is unreachable — is the stack running?"], "error": "opa_unreachable"}
+        return {"allowed": False, "reasons": ["OPA is unreachable - is the stack running?"], "error": "opa_unreachable"}
     except Exception as e:
         return {"allowed": False, "reasons": [f"Unexpected OPA error: {e}"], "error": "opa_unknown"}
 
@@ -606,9 +606,9 @@ def pre_deploy_check():
         fail_policy_engine(decision, "Deploy")
 
     if not decision.get("allowed", False):
-        print("[FAIL] POLICY VIOLATION — Infrastructure check failed:")
+        print("[FAIL] POLICY VIOLATION - Infrastructure check failed:")
         for reason in decision.get("reasons", []):
-            print(f"       ✗ {reason}")
+            print(f"       - {reason}")
         print("[FAIL] Deploy blocked by policy.")
         sys.exit(1)
     else:
@@ -651,9 +651,9 @@ def pre_promote_check():
         fail_policy_engine(decision, "Promote")
 
     if not decision.get("allowed", False):
-        print("[FAIL] POLICY VIOLATION — Canary safety check failed:")
+        print("[FAIL] POLICY VIOLATION - Canary safety check failed:")
         for reason in decision.get("reasons", []):
-            print(f"       ✗ {reason}")
+            print(f"       - {reason}")
         print("[FAIL] Promote blocked by policy.")
         sys.exit(1)
     else:
@@ -754,24 +754,23 @@ def cmd_status(args):
             append_history(record)
 
             # Clear terminal and display
-            # Use simple approach — carriage return
+            # Use simple ASCII borders for broad terminal compatibility
             display = (
-                f"  ╔═══════════════════════════════════════╗\n"
-                f"  ║     SwiftDeploy Status Dashboard      ║\n"
-                f"  ╠═══════════════════════════════════════╣\n"
-                f"  ║ Mode: {mode_label:<28s} ║\n"
-                f"  ║ Chaos: {chaos_label:<27s} ║\n"
-                f"  ║ Req/s: {reqs_per_sec:<8.2f}               ║\n"
-                f"  ║ P99 Latency: {p99_ms:<8.0f}ms             ║\n"
-                f"  ║ Error Rate: {error_rate*100:<5.2f}%               ║\n"
-                f"  ║ Uptime: {metrics['app_uptime_seconds']:<8.0f}s              ║\n"
-                f"  ╠═══════════════════════════════════════╣\n"
-                f"  ║ Policy Compliance                    ║\n"
-                f"  ║   Infrastructure: {'PASS' if infra_decision.get('allowed', False) else 'FAIL':<5s}           ║\n"
-                f"  ║   Canary Safety:  {'PASS' if canary_decision.get('allowed', False) else 'FAIL':<5s}           ║\n"
-                f"  ╚═══════════════════════════════════════╝\n"
+                f"  +---------------------------------------+\n"
+                f"  |     SwiftDeploy Status Dashboard      |\n"
+                f"  +---------------------------------------+\n"
+                f"  | Mode: {mode_label:<28s} |\n"
+                f"  | Chaos: {chaos_label:<27s} |\n"
+                f"  | Req/s: {reqs_per_sec:<8.2f}               |\n"
+                f"  | P99 Latency: {p99_ms:<8.0f}ms             |\n"
+                f"  | Error Rate: {error_rate*100:<5.2f}%               |\n"
+                f"  | Uptime: {metrics['app_uptime_seconds']:<8.0f}s              |\n"
+                f"  +---------------------------------------+\n"
+                f"  | Policy Compliance                    |\n"
+                f"  |   Infrastructure: {'PASS' if infra_decision.get('allowed', False) else 'FAIL':<5s}           |\n"
+                f"  |   Canary Safety:  {'PASS' if canary_decision.get('allowed', False) else 'FAIL':<5s}           |\n"
+                f"  +---------------------------------------+\n"
             )
-
             sys.stdout.write("\033[2J\033[H")  # Clear screen
             sys.stdout.write(display)
             sys.stdout.flush()
@@ -811,7 +810,7 @@ def cmd_audit(args):
         sys.exit(1)
 
     lines = []
-    lines.append("# Audit Report — SwiftDeploy Stage 4B")
+    lines.append("# Audit Report - SwiftDeploy Stage 4B")
     lines.append("")
     lines.append(f"**Generated:** {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}")
     lines.append(f"**Records Analyzed:** {len(records)}")
@@ -840,7 +839,7 @@ def cmd_audit(args):
             
             # Track explicit mode changes
             if prev_mode and mode != prev_mode and mode != "unknown":
-                timeline_events.append((ts, "mode_change", f"{prev_mode} → {mode}", ""))
+                timeline_events.append((ts, "mode_change", f"{prev_mode} -> {mode}", ""))
             if mode != "unknown":
                 prev_mode = mode
 
@@ -946,3 +945,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

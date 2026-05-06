@@ -8,25 +8,25 @@ SwiftDeploy is a declarative infrastructure CLI that generates Docker Compose an
 
 ```
 .
-├── manifest.yaml              # Single source of truth (only file you edit)
-├── swiftdeploy                # CLI tool (Python 3)
-├── Dockerfile                 # API service image
-├── app/
-│   ├── main.py                # Python Flask API
-│   └── requirements.txt       # Python dependencies
-├── templates/
-│   ├── nginx.conf.j2          # Nginx config template
-│   └── docker-compose.yml.j2  # Compose file template
-├── policies/
-│   └── swiftdeploy/
-│       ├── infrastructure.rego # Infrastructure policy (disk/CPU checks)
-│       ├── canary.rego         # Canary safety policy (error rate/P99)
-│       └── thresholds.json     # Data-driven threshold values
-├── nginx.conf                 # Generated (root folder)
-├── docker-compose.yml         # Generated (root folder)
-├── history.jsonl              # Generated audit trail
-├── audit_report.md            # Generated audit report
-└── README.md                  # This file
+|-- manifest.yaml              # Single source of truth (only file you edit)
+|-- swiftdeploy                # CLI tool (Python 3)
+|-- Dockerfile                 # API service image
+|-- app/
+|   |-- main.py                # Python Flask API
+|   `-- requirements.txt       # Python dependencies
+|-- templates/
+|   |-- nginx.conf.j2          # Nginx config template
+|   `-- docker-compose.yml.j2  # Compose file template
+|-- policies/
+|   `-- swiftdeploy/
+|       |-- infrastructure.rego # Infrastructure policy (disk/CPU checks)
+|       |-- canary.rego         # Canary safety policy (error rate/P99)
+|       `-- thresholds.json     # Data-driven threshold values
+|-- nginx.conf                 # Generated (root folder)
+|-- docker-compose.yml         # Generated (root folder)
+|-- history.jsonl              # Generated audit trail
+|-- audit_report.md            # Generated audit report
+`-- README.md                  # This file
 ```
 
 ## Prerequisites
@@ -168,6 +168,30 @@ restart_policy: unless-stopped
 
 ## Stage 4B: Observability, Policy Enforcement & Auditing
 
+### Published Blog Post
+
+[Building SwiftDeploy: A Declarative Infrastructure CLI with Observability and Policy Enforcement](https://dev.to/adeolu102/building-swiftdeploy-a-declarative-infrastructure-cli-with-observability-and-policy-enforcement-4g8o)
+
+### Architecture
+
+```mermaid
+flowchart LR
+    Operator["Operator / swiftdeploy CLI"] --> Manifest["manifest.yaml"]
+    Manifest --> Init["swiftdeploy init"]
+    Init --> Compose["docker-compose.yml"]
+    Init --> NginxConf["nginx.conf"]
+    Compose --> API["api-service (Flask)"]
+    Compose --> Nginx["nginx-proxy"]
+    Compose --> OPA["opa-engine"]
+    Nginx --> API
+    API --> Metrics["/metrics"]
+    Operator --> OPA
+    Operator --> Metrics
+    OPA --> Policies["policies/*.rego + thresholds.json"]
+    Operator --> History["history.jsonl"]
+    History --> Audit["audit_report.md"]
+```
+
 ### /metrics Endpoint
 
 The API exposes a Prometheus-format `/metrics` endpoint at `http://localhost:8080/metrics`:
@@ -188,7 +212,7 @@ SwiftDeploy uses Open Policy Agent (OPA) as a sidecar container for policy enfor
 - **Infrastructure Policy**: Blocks deploy if Disk Free < 10GB or CPU Load > 2.0
 - **Canary Safety Policy**: Blocks promote if Error Rate > 1% or P99 Latency > 500ms
 
-**Key design:** The CLI never makes decisions itself — it always asks OPA. If OPA is unreachable, the CLI warns but continues.
+**Key design:** The CLI never makes allow/deny decisions itself. It always asks OPA and blocks lifecycle actions when policy compliance cannot be verified.
 
 ### swiftdeploy status
 
@@ -221,4 +245,5 @@ cat audit_report.md
 
 ## License
 
-HNG Internship — DevOps Track Stage 4A
+HNG Internship - DevOps Track Stage 4A/4B
+
